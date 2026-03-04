@@ -49,7 +49,10 @@ final_h = max(all_h) - final_y + 5
 
 # 6. ADIM: Kopar
 miknatıs = inner[final_y:final_y+final_h, final_x:final_x+final_w]
-arka_plan = cv2.inpaint(inner, mask, 5, cv2.INPAINT_TELEA)
+# Maskeyi büyüt - daha geniş alan temizlensin
+kernel_inpaint = np.ones((15,15), np.uint8)
+mask_big = cv2.dilate(mask, kernel_inpaint, iterations=2)
+arka_plan = cv2.inpaint(inner, mask_big, 10, cv2.INPAINT_TELEA)
 
 print(f"Mıknatıs boyutu: {final_w}x{final_h} piksel")
 
