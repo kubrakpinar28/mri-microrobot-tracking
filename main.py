@@ -1,6 +1,7 @@
 import cv2
 import numpy as np
 import matplotlib.pyplot as plt
+import os
 
 img = cv2.imread("translated_random_dark_1.png", cv2.IMREAD_GRAYSCALE)
 
@@ -66,5 +67,152 @@ axes[2].imshow(arka_plan, cmap='gray')
 axes[2].set_title("Arka Plan")
 axes[3].imshow(miknatıs, cmap='gray')
 axes[3].set_title("Mıknatıs Deseni")
+plt.tight_layout()
+plt.show()
+
+def normalize_kspace(image):
+    """1. Normalizasyon - k-space maksimum değere böl"""
+    image = image.astype(np.float32)
+    max_val = np.max(np.abs(image))
+    if max_val > 0:
+        image = image / max_val
+    return image
+
+def random_translation(image, max_shift=20):
+    """2. Rastgele 2D öteleme"""
+    h, w = image.shape
+    tx = np.random.randint(-max_shift, max_shift)
+    ty = np.random.randint(-max_shift, max_shift)
+    M = np.float32([[1, 0, tx], [0, 1, ty]])
+    translated = cv2.warpAffine(image, M, (w, h))
+    return translated, tx, ty
+
+def random_flip(image):
+    """3. X ekseninde rastgele çevirme"""
+    if np.random.rand() > 0.5:
+        return cv2.flip(image, 1), True
+    return image, False
+
+def random_crop_with_noise(image, crop_size=80):
+    """4. Rastgele kırpma + Gaussian gürültü"""
+    h, w = image.shape
+    if h < crop_size or w < crop_size:
+        crop_size = min(h, w) - 10
+    
+    x = np.random.randint(0, w - crop_size)
+    y = np.random.randint(0, h - crop_size)
+    cropped = image[y:y+crop_size, x:x+crop_size]
+    
+    # Orijinal görüntü gürültüsüne eşit Gaussian gürültü
+    noise = np.random.normal(0, 0.02, cropped.shape).astype(np.float32)
+    noisy = np.clip(cropped + noise, 0, 1)
+    return noisy
+
+def sinusoidal_contrast_map(image):
+    """5. Sinüzoidal kontrast haritası - doku heterojenliğini taklit eder"""
+    h, w = image.shape
+    
+    # Periyot 0 ile 4π arasında rastgele
+    period = np.random.uniform(0, 4 * np.pi)
+    
+    # Açı 0 ile 90° arasında rastgele
+    angle = np.random.uniform(0, np.pi / 2)
+    
+    # Koordinat ızgarası
+    x = np.linspace(0, period, w)
+    y = np.linspace(0, period, h)
+    xx, yy = np.meshgrid(x, y)
+    
+    # Döndürülmüş sinüzoidal harita
+    contrast_map = 0.5 + 0.5 * np.sin(xx * np.cos(angle) + yy * np.sin(angle))
+    
+    # Görüntüyle çarp
+    result = image * contrast_map.astype(np.float32)
+    return np.clip(result, 0, 1)
+
+def generate_synthetic_data(background, magnet_patch, num_samples=50, output_dir="synthetic"):
+    """Tüm augmentation'ları birleştirip sentetik veri üret"""
+    os.makedirs(output_dir, exist_ok=True)
+    
+    bg_h, bg_w = background.shape
+    mg_h, mg_w = magnet_patch.shape
+    
+    labels = []
+    
+    for i in range(num_samples):
+        # Arka planı normalize et
+        bg = normalize_kspace(background.copy().astype(np.float32))
+        
+        # Mıknatısı rastgele konuma yerleştir
+        max_x = bg_w - mg_w - 10
+        max_y = bg_h - mg_h - 10
+        pos_x = np.random.randint(10, max_x)
+        pos_y = np.random.randint(10, max_y)
+        
+        # Mıknatısı yapıştır
+        synthetic = bg.copy()
+        mg_norm = normalize_kspace(magnet_patch.astype(np.float32))
+        
+        # Sadece koyu pikselleri yapıştır (maske ile)
+        region = synthetic[pos_y:pos_y+mg_h, pos_x:pos_x+mg_w]
+        mask = mg_norm < 0.8
+        region[mask] = mg_norm[mask]
+        synthetic[pos_y:pos_y+mg_h, pos_x:pos_x+mg_w] = region
+        
+        # Flip uygula
+        synthetic, flipped = random_flip(synthetic)
+        if flipped:
+            pos_x = bg_w - pos_x - mg_w
+        
+        # Sinüzoidal kontrast haritası uygula
+        synthetic = sinusoidal_contrast_map(synthetic)
+        
+        # Merkez koordinatı hesapla
+        cx = pos_x + mg_w // 2
+        cy = pos_y + mg_h // 2
+        
+        # Kaydet
+        save_img = (synthetic * 255).astype(np.uint8)
+        filename = f"synthetic_{i+1:04d}.png"
+        cv2.imwrite(os.path.join(output_dir, filename), save_img)
+        labels.append({"dosya": filename, "x": cx, "y": cy})
+        
+        if (i+1) % 10 == 0:
+            print(f"{i+1}/{num_samples} görüntü üretildi...")
+    
+    # Etiketleri kaydet
+    import csv
+    with open(os.path.join(output_dir, "labels.csv"), "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=["dosya", "x", "y"])
+        writer.writeheader()
+        writer.writerows(labels)
+    
+    print(f"\nTamamlandı! {num_samples} sentetik görüntü '{output_dir}' klasörüne kaydedildi.")
+    return labels
+
+# ==========================================
+# ÇALIŞTIR
+# ==========================================
+
+# Arka plan ve mıknatıs desenini yükle
+background = cv2.imread("arka_plan.png", cv2.IMREAD_GRAYSCALE)
+magnet = cv2.imread("miknatıs_desen.png", cv2.IMREAD_GRAYSCALE)
+
+print(f"Arka plan boyutu: {background.shape}")
+print(f"Mıknatıs deseni boyutu: {magnet.shape}")
+
+# 50 sentetik görüntü üret
+labels = generate_synthetic_data(background, magnet, num_samples=50)
+
+# İlk 4 sonucu göster
+import matplotlib.pyplot as plt
+fig, axes = plt.subplots(2, 4, figsize=(16, 8))
+for idx in range(8):
+    img = cv2.imread(f"synthetic/synthetic_{idx+1:04d}.png", cv2.IMREAD_GRAYSCALE)
+    row, col = idx // 4, idx % 4
+    axes[row][col].imshow(img, cmap='gray')
+    axes[row][col].set_title(f"x={labels[idx]['x']}, y={labels[idx]['y']}")
+    axes[row][col].axis('off')
+plt.suptitle("Sentetik Görüntüler - Data Augmentation")
 plt.tight_layout()
 plt.show()
