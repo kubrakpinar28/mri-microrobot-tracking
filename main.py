@@ -124,7 +124,7 @@ def sinusoidal_contrast_map(image):
     xx, yy = np.meshgrid(x, y)
     
     # Döndürülmüş sinüzoidal harita
-    contrast_map = 0.5 + 0.5 * np.sin(xx * np.cos(angle) + yy * np.sin(angle))
+    contrast_map = 0.85 + 0.15 * np.sin(xx * np.cos(angle) + yy * np.sin(angle))
     
     # Görüntüyle çarp
     result = image * contrast_map.astype(np.float32)
@@ -153,10 +153,12 @@ def generate_synthetic_data(background, magnet_patch, num_samples=50, output_dir
         synthetic = bg.copy()
         mg_norm = normalize_kspace(magnet_patch.astype(np.float32))
         
-        # Sadece koyu pikselleri yapıştır (maske ile)
-        region = synthetic[pos_y:pos_y+mg_h, pos_x:pos_x+mg_w]
-        mask = mg_norm < 0.8
-        region[mask] = mg_norm[mask]
+        # Sadece koyu pikselleri yapıştır 
+        region = synthetic[pos_y:pos_y+mg_h, pos_x:pos_x+mg_w].copy()
+        mg_mask = mg_norm < 0.6  # eşiği düşürdük
+        # Yumuşak geçiş için blend
+        alpha = np.where(mg_mask, 0.85, 0.0).astype(np.float32)
+        region = region * (1 - alpha) + mg_norm * alpha
         synthetic[pos_y:pos_y+mg_h, pos_x:pos_x+mg_w] = region
         
         # Flip uygula
@@ -189,10 +191,6 @@ def generate_synthetic_data(background, magnet_patch, num_samples=50, output_dir
     
     print(f"\nTamamlandı! {num_samples} sentetik görüntü '{output_dir}' klasörüne kaydedildi.")
     return labels
-
-# ==========================================
-# ÇALIŞTIR
-# ==========================================
 
 # Arka plan ve mıknatıs desenini yükle
 background = cv2.imread("arka_plan.png", cv2.IMREAD_GRAYSCALE)
