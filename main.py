@@ -168,6 +168,10 @@ def generate_synthetic_data(background, magnet_patch, num_samples=50, output_dir
         synthetic, flipped = random_flip(synthetic)
         if flipped:
             pos_x = bg_w - pos_x - mg_w
+
+        # Gaussian gürültü ekle
+        noise = np.random.normal(0, 0.02, synthetic.shape).astype(np.float32)
+        synthetic = np.clip(synthetic + noise, 0, 1)
         
         # Sinüzoidal kontrast haritası uygula
         synthetic = sinusoidal_contrast_map(synthetic)
@@ -216,4 +220,15 @@ for idx in range(8):
     axes[row][col].axis('off')
 plt.suptitle("Sentetik Görüntüler - Data Augmentation")
 plt.tight_layout()
+plt.show()
+
+# Sadece mıknatıs - siyah arka plan
+m = cv2.imread("miknatıs_desen.png", cv2.IMREAD_GRAYSCALE)
+_, m_mask = cv2.threshold(m, 150, 255, cv2.THRESH_BINARY_INV)
+m_black = cv2.bitwise_and(m, m, mask=m_mask)
+
+plt.figure()
+plt.imshow(m_black, cmap='gray')
+plt.title("Mıknatıs - Siyah Arka Plan")
+plt.axis('off')
 plt.show()
