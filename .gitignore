@@ -1,0 +1,12 @@
+﻿synthetic_dataset_all/
+synthetic_dataset_annotated/
+synthetic_dataset_yolo/
+synthetic_dataset_yolo_filtered/
+synthetic_dataset_yolo_split/
+synthetic_dataset_yolo_augmented/
+all_mri/
+heart_png/
+knee_png/
+__pycache__/
+*.pt
+runs/
