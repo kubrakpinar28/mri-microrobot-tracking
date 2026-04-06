@@ -1,0 +1,23 @@
+# MRI Microrobot Detection — Requirements
+# Python 3.10+ gereklidir
+# Kurulum: pip install -r requirements.txt
+
+# Görüntü işleme
+opencv-python>=4.8.0
+numpy>=1.24.0
+matplotlib>=3.7.0
+
+# NIfTI dosya okuma (kalp dataseti)
+nibabel>=5.0.0
+
+# YOLOv8 eğitimi
+ultralytics>=8.0.0
+
+# PyTorch (ultralytics bağımlılığı — CUDA için ayrıca kurulum gerekebilir)
+# CPU için:
+torch>=2.0.0
+torchvision>=0.15.0
+# CUDA için: https://pytorch.org/get-started/locally/ adresinden uygun versiyonu seç
+
+# Veri işleme
+Pillow>=9.0.0
