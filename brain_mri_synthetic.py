@@ -6,6 +6,45 @@ import glob
 import csv
 
 
+def keep_largest_component(mask):
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    if num_labels <= 1:
+        return mask
+    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
+    return (labels == largest_label).astype(np.uint8) * 255
+
+
+def clean_seg_mask(seg_mask):
+    """Seg maskesini temizle ve en buyuk bileseni dondur."""
+    if hasattr(seg_mask, 'dtype') and seg_mask.dtype == bool:
+        mask_u8 = seg_mask.astype(np.uint8) * 255
+    else:
+        mask_u8 = (seg_mask > 0).astype(np.uint8) * 255
+
+    # Ellipse kernel — kare koseler ve ince cikintilari yumusatir
+    k_open  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_OPEN,  k_open)
+    mask_u8 = cv2.morphologyEx(mask_u8, cv2.MORPH_CLOSE, k_close)
+    mask_u8 = keep_largest_component(mask_u8)
+    return mask_u8
+
+
+def get_seg_contour(mask_u8, simplify=True):
+    """Temizlenmis maskeden en buyuk konturu dondur."""
+    contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL,
+                                   cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+    c = max(contours, key=cv2.contourArea)
+    if cv2.contourArea(c) < 16:
+        return None
+    if simplify:
+        epsilon = 0.02 * cv2.arcLength(c, True)
+        c = cv2.approxPolyDP(c, epsilon, True)
+    return c
+
+
 def extract_magnet_patch(magnet_img_path):
     img = cv2.imread(magnet_img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
@@ -62,22 +101,31 @@ def extract_magnet_patch(magnet_img_path):
     H2, W2 = crop.shape
     patch_norm = np.clip(crop / (bg * 2.0), 0.0, 1.0).astype(np.float32)
     eff = (np.abs(patch_norm - 0.5) > 0.07).astype(np.uint8) * 255
-    k   = np.ones((3, 3), np.uint8)
-    effect_mask = cv2.morphologyEx(eff, cv2.MORPH_OPEN, k)
-    effect_mask = cv2.morphologyEx(effect_mask, cv2.MORPH_CLOSE, k * 3)
+
+    # Ellipse kernel — kare cikintilari onler
+    k1 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    effect_mask = cv2.morphologyEx(eff, cv2.MORPH_OPEN,  k1)
+    effect_mask = cv2.morphologyEx(effect_mask, cv2.MORPH_CLOSE, k2)
+
+    # Sadece en buyuk bileseni tut — kucuk adaciklar ve ince cikıntilar kalkar
+    effect_mask = keep_largest_component(effect_mask)
+
+    # En buyuk konturdan yeniden temiz dolu maske ciz
+    contours_eff, _ = cv2.findContours(effect_mask, cv2.RETR_EXTERNAL,
+                                       cv2.CHAIN_APPROX_SIMPLE)
+    if contours_eff:
+        c_eff = max(contours_eff, key=cv2.contourArea)
+        epsilon = max(1.5, 0.02 * cv2.arcLength(c_eff, True))
+        c_eff = cv2.approxPolyDP(c_eff, epsilon, True)
+        cleaned_eff = np.zeros_like(effect_mask)
+        cv2.drawContours(cleaned_eff, [c_eff], -1, 255, -1)
+        effect_mask = cleaned_eff
     center = (W2 // 2, H2 // 2)
     print(f"[Magnet] BG~{bg:.0f} | Patch={patch_norm.shape} | "
           f"Void(<0.4)={(patch_norm < 0.4).sum()} | "
           f"Halo(>0.6)={(patch_norm > 0.6).sum()}")
     return patch_norm, effect_mask, center
-
-
-def keep_largest_component(mask):
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
-    if num_labels <= 1:
-        return mask
-    largest_label = 1 + np.argmax(stats[1:, cv2.CC_STAT_AREA])
-    return (labels == largest_label).astype(np.uint8) * 255
 
 
 def get_tissue_mask(image, source_type="default"):
@@ -350,13 +398,14 @@ def place_magnet(image_f32, tissue_mask,
     visible = cnr > cnr_threshold
 
     # em_placed_global: tam goruntu koordinatlarinda artifact maskesi
-    # bbox merkezi hesabi icin ix1, iy1 offset gerekiyor
     em_placed_global = None
     if em_placed is not None and em_placed.any():
-        # em_placed ROI koordinatlarinda — tam goruntu koordinatina donustur
         full_mask = np.zeros(result.shape, dtype=bool)
         full_mask[iy1:iy2, ix1:ix2] = em_placed
-        em_placed_global = full_mask
+
+        # Resize + tissue_roi kesimi sonrasi olusan cikintilari temizle
+        cleaned = clean_seg_mask(full_mask.astype(np.uint8))
+        em_placed_global = cleaned.astype(bool)
 
     return result, visible, round(cnr, 3), em_placed_global
 
@@ -441,7 +490,8 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
                         "scale": scales[i], "h_mm": h_values[i],
                         "visible": visible, "cnr": cnr,
                         "alpha": alphas[i], "contrast": contrasts[i], "motion": motion_vecs[i],
-                        "bbox_w_px": bbox_w_px, "bbox_h_px": bbox_h_px})
+                        "bbox_w_px": bbox_w_px, "bbox_h_px": bbox_h_px,
+                        "seg_mask": em_placed_global})  # YOLO-seg icin tam goruntu maskesi
     synthetic_u8 = (img_f * 255).astype(np.uint8)
     sigma = float(np.random.uniform(2.0, 5.0))
     synthetic_u8 = add_rice_noise(synthetic_u8, sigma=sigma)
@@ -648,13 +698,16 @@ if __name__ == "__main__":
                 continue
             bx = lbl["bbox_cx_px"]
             by = lbl["bbox_cy_px"]
-            bw = int(lbl["bbox_w_px"])
-            bh = int(lbl["bbox_h_px"])
-            x1 = int(round(bx - bw / 2))
-            y1 = int(round(by - bh / 2))
-            x2 = int(round(bx + bw / 2))
-            y2 = int(round(by + bh / 2))
-            cv2.rectangle(yolo_annotated, (x1, y1), (x2, y2), (0, 255, 0), 1)
+
+            # Polygon ciz (seg mask varsa)
+            seg_mask = lbl.get("seg_mask")
+            if seg_mask is not None and seg_mask.any():
+                mask_u8 = clean_seg_mask(seg_mask)
+                c = get_seg_contour(mask_u8, simplify=True)
+                if c is not None:
+                    cv2.drawContours(yolo_annotated, [c], -1, (0, 255, 0), 1)
+
+            # Merkez noktasi
             cv2.circle(yolo_annotated, (int(round(bx)), int(round(by))), DOT_RADIUS, (0, 255, 0), -1)
             cv2.circle(yolo_annotated, (int(round(bx)), int(round(by))), DOT_RADIUS + 1, (255, 255, 255), 1)
         cv2.imwrite(yolo_ann_path, yolo_annotated)
@@ -663,13 +716,34 @@ if __name__ == "__main__":
         for lbl in labels:
             if not lbl["visible"]:
                 continue
-            x_center = lbl["bbox_cx_px"] / img_w  # gercek bbox merkezi
-            y_center = lbl["bbox_cy_px"] / img_h
-            bw = float(np.clip(lbl["bbox_w_px"] / img_w, 0.01, 0.5))
-            bh = float(np.clip(lbl["bbox_h_px"] / img_h, 0.01, 0.5))
-            x_center = float(np.clip(x_center, bw/2, 1 - bw/2))
-            y_center = float(np.clip(y_center, bh/2, 1 - bh/2))
-            yolo_lines.append(f"0 {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}")
+
+            # YOLO-seg: em_placed_global maskesinden polygon cıkar
+            seg_mask = lbl.get("seg_mask")
+            if seg_mask is not None and seg_mask.any():
+                mask_u8 = clean_seg_mask(seg_mask)
+                c = get_seg_contour(mask_u8, simplify=True)
+                if c is None:
+                    continue
+
+                # Kontur noktalarini normalize et
+                pts = c.reshape(-1, 2)
+                pts_norm = []
+                for px_pt, py_pt in pts:
+                    pts_norm.append(f"{float(px_pt) / img_w:.6f}")
+                    pts_norm.append(f"{float(py_pt) / img_h:.6f}")
+
+                if len(pts_norm) >= 6:  # En az 3 nokta (6 koordinat)
+                    yolo_lines.append("0 " + " ".join(pts_norm))
+            else:
+                # Fallback: bbox yaz (seg mask yoksa)
+                x_center = lbl["bbox_cx_px"] / img_w
+                y_center = lbl["bbox_cy_px"] / img_h
+                bw = float(np.clip(lbl["bbox_w_px"] / img_w, 0.01, 0.5))
+                bh = float(np.clip(lbl["bbox_h_px"] / img_h, 0.01, 0.5))
+                x_center = float(np.clip(x_center, bw/2, 1 - bw/2))
+                y_center = float(np.clip(y_center, bh/2, 1 - bh/2))
+                yolo_lines.append(f"0 {x_center:.6f} {y_center:.6f} {bw:.6f} {bh:.6f}")
+
         with open(yolo_label_path, "w") as f:
             f.write("\n".join(yolo_lines))
 
