@@ -1,0 +1,55 @@
+{
+  "date": "2026-05-04 17:39",
+  "model": "YOLOv8n detection",
+  "weights": "microrobot_v3_detection-4/weights/best.pt",
+  "training": {
+    "epochs": 64,
+    "mAP50": 0.962,
+    "mAP50_95": 0.695
+  },
+  "test_results": {
+    "mAP50": 0.952,
+    "mAP50_95": 0.679,
+    "precision": 0.885,
+    "recall": 0.918,
+    "dice_mean": 0.872,
+    "rms_center_error_px": 0.566,
+    "mean_center_error_px": 0.329
+  },
+  "dataset": {
+    "train": 4869,
+    "val": 375,
+    "test": 227,
+    "organs": [
+      "brain",
+      "heart",
+      "breast",
+      "knee"
+    ],
+    "pixel_spacing": {
+      "brain": 0.8,
+      "heart": 1.25,
+      "breast": 0.75,
+      "knee": 1.8
+    }
+  },
+  "tracking_linear": {
+    "n_robots": 4,
+    "n_frames": 30,
+    "unique_ids": 4,
+    "id_switches": 1,
+    "id_consistency_pct": 75.0,
+    "avg_detections_per_frame": 3.9,
+    "false_pos_per_frame": 0.63
+  },
+  "tracking_vcurve": {
+    "scenario": "V-curve catheter simulation",
+    "n_robots": 5,
+    "n_frames": 40,
+    "unique_ids": 5,
+    "id_switches": 1,
+    "id_consistency_pct": 80.0,
+    "avg_detections_per_frame": 4.5,
+    "false_pos_per_frame": 0.17
+  }
+}
