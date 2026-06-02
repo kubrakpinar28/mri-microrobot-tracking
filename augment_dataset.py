@@ -1,17 +1,17 @@
 """
-Veri Artirma (Data Augmentation) — Sadece Train | YOLO-Seg
-===========================================================
-synthetic_dataset_yolo_split/train/ klasorundeki goruntuleri
-augmentation ile cogaltir.
+Veri Artirma (Data Augmentation) — YOLO Detection BBox
+======================================================
 
-ONEMLI: Augmentation SADECE train'e uygulanir.
-Val seti temiz kalir — veri sizintisi olmaz.
+Label formati:
+    class_id x_center y_center width height
 
-YOLO-seg label formati: 0 x1 y1 x2 y2 x3 y3 ...
-Her nokta normalize edilmis (0-1 arasi) koordinat.
+Bu sürüm segmentation/polygon label kullanmaz.
+Rotation uygulanmaz; böylece bbox aspect ratio bozulmaz.
+Sadece train setine augmentation uygulanır.
+Val/test setleri temiz kalır.
 
-Kullanim:
-  py augment_dataset.py
+Çalıştırma:
+    python augment_dataset.py
 """
 
 import os
@@ -20,205 +20,276 @@ import numpy as np
 import shutil
 import random
 
-SRC_DIR = "synthetic_dataset_yolo_split/train"
+# Öncelik sırası: önce filtrelenmiş dataset, yoksa doğrudan YOLO dataset.
+# Eğer elinde hazır splitli klasör varsa SRC_DIR'i elle ona da çevirebilirsin.
+SRC_DIR = "synthetic_dataset_yolo_filtered"
 DST_DIR = "synthetic_dataset_yolo_augmented"
-N_AUG   = 2
-SEED    = 42
+
+N_AUG = 2
+SEED = 42
+
+TRAIN_RATIO = 0.70
+VAL_RATIO = 0.15
+TEST_RATIO = 0.15
 
 random.seed(SEED)
 np.random.seed(SEED)
 
-# Eski augmented dataset varsa sil
-if os.path.exists(DST_DIR):
-    shutil.rmtree(DST_DIR)
 
-for folder in ["train/images", "train/labels", "val/images", "val/labels"]:
-    os.makedirs(os.path.join(DST_DIR, folder), exist_ok=True)
+def ensure_src_dir():
+    """Varsayılan filtrelenmiş klasör yoksa alternatifleri dene."""
+    global SRC_DIR
+    candidates = [SRC_DIR, "synthetic_dataset_yolo", "synthetic_dataset_yolo_split"]
+    for c in candidates:
+        if os.path.exists(c):
+            SRC_DIR = c
+            return
+    raise FileNotFoundError(
+        "Kaynak dataset bulunamadı. Beklenenlerden biri olmalı: "
+        "synthetic_dataset_yolo_filtered / synthetic_dataset_yolo / synthetic_dataset_yolo_split"
+    )
 
-# ── Label okuma / yazma ──────────────────────────────────────────────────────
 
-def read_seg_labels(label_path):
+def reset_output_dir(path):
+    if os.path.exists(path):
+        shutil.rmtree(path)
+
+    for folder in [
+        "train/images", "train/labels",
+        "val/images", "val/labels",
+        "test/images", "test/labels",
+    ]:
+        os.makedirs(os.path.join(path, folder), exist_ok=True)
+
+
+def read_bbox_labels(label_path):
     """
-    YOLO-seg label oku.
-    Her satir: class_id x1 y1 x2 y2 ...
-    Donus: [(cls, [(x1,y1), (x2,y2), ...]), ...]
+    YOLO detection label oku.
+    Her satır kesinlikle 5 eleman olmalı:
+        class_id x_center y_center width height
     """
+    labels = []
+
     if not os.path.exists(label_path):
-        return []
-    instances = []
-    with open(label_path) as f:
+        return labels
+
+    with open(label_path, "r", encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line:
                 continue
+
             parts = line.split()
-            cls = int(parts[0])
-            coords = list(map(float, parts[1:]))
-            # Koordinatlar cift olmali
-            if len(coords) < 6 or len(coords) % 2 != 0:
+            if len(parts) != 5:
+                print(f"[UYARI] Detection formatı değil, atlandı: {label_path} -> {line}")
                 continue
-            pts = [(coords[i], coords[i+1]) for i in range(0, len(coords), 2)]
-            instances.append((cls, pts))
-    return instances
+
+            cls = int(float(parts[0]))
+            x, y, w, h = map(float, parts[1:])
+
+            # Güvenlik: değerleri normalize aralıkta tut.
+            x = float(np.clip(x, 0.0, 1.0))
+            y = float(np.clip(y, 0.0, 1.0))
+            w = float(np.clip(w, 0.0, 1.0))
+            h = float(np.clip(h, 0.0, 1.0))
+
+            labels.append([cls, x, y, w, h])
+
+    return labels
 
 
-def write_seg_labels(label_path, instances):
-    """
-    YOLO-seg label yaz.
-    instances: [(cls, [(x1,y1), (x2,y2), ...]), ...]
-    """
-    with open(label_path, "w") as f:
-        for cls, pts in instances:
-            coords = " ".join(f"{x:.6f} {y:.6f}" for x, y in pts)
-            f.write(f"{cls} {coords}\n")
+def write_bbox_labels(label_path, labels):
+    with open(label_path, "w", encoding="utf-8") as f:
+        for cls, x, y, w, h in labels:
+            f.write(f"{cls} {x:.6f} {y:.6f} {w:.6f} {h:.6f}\n")
 
 
-# ── Polygon donusturuculer ───────────────────────────────────────────────────
-
-def flip_pts_h(pts):
-    """Yatay flip: x -> 1-x"""
-    return [(1.0 - x, y) for x, y in pts]
-
-def flip_pts_v(pts):
-    """Dikey flip: y -> 1-y"""
-    return [(x, 1.0 - y) for x, y in pts]
-
-def rotate_pts(pts, angle_deg):
-    """Merkez (0.5, 0.5) etrafinda her polygon noktasini dondur."""
-    angle_rad = np.deg2rad(angle_deg)
-    cos_a, sin_a = np.cos(angle_rad), np.sin(angle_rad)
-    cx, cy = 0.5, 0.5
-    new_pts = []
-    for x, y in pts:
-        dx, dy = x - cx, y - cy
-        nx = cx + dx * cos_a - dy * sin_a
-        ny = cy + dx * sin_a + dy * cos_a
-        # Goruntu siniri disina cikmasin
-        nx = float(np.clip(nx, 0.0, 1.0))
-        ny = float(np.clip(ny, 0.0, 1.0))
-        new_pts.append((nx, ny))
-    return new_pts
+def aug_flip_h(img, labels):
+    """Yatay flip: x_center -> 1 - x_center. w/h değişmez."""
+    new_labels = []
+    for cls, x, y, w, h in labels:
+        new_labels.append([cls, 1.0 - x, y, w, h])
+    return cv2.flip(img, 1), new_labels
 
 
-# ── Augmentation fonksiyonlari ───────────────────────────────────────────────
+def aug_flip_v(img, labels):
+    """Dikey flip: y_center -> 1 - y_center. w/h değişmez."""
+    new_labels = []
+    for cls, x, y, w, h in labels:
+        new_labels.append([cls, x, 1.0 - y, w, h])
+    return cv2.flip(img, 0), new_labels
 
-def aug_flip_h(img, instances):
-    new_inst = [(cls, flip_pts_h(pts)) for cls, pts in instances]
-    return cv2.flip(img, 1), new_inst
 
-def aug_flip_v(img, instances):
-    new_inst = [(cls, flip_pts_v(pts)) for cls, pts in instances]
-    return cv2.flip(img, 0), new_inst
+def aug_brightness(img, labels):
+    factor = np.random.uniform(0.75, 1.25)
+    out = np.clip(img.astype(np.float32) * factor, 0, 255).astype(np.uint8)
+    return out, labels
 
-def aug_brightness(img, instances):
-    f = np.random.uniform(0.7, 1.3)
-    return np.clip(img.astype(np.float32) * f, 0, 255).astype(np.uint8), instances
 
-def aug_contrast(img, instances):
+def aug_contrast(img, labels):
     mean = img.mean()
-    f = np.random.uniform(0.8, 1.2)
-    return np.clip((img.astype(np.float32) - mean) * f + mean, 0, 255).astype(np.uint8), instances
+    factor = np.random.uniform(0.85, 1.15)
+    out = np.clip((img.astype(np.float32) - mean) * factor + mean, 0, 255).astype(np.uint8)
+    return out, labels
 
-def aug_noise(img, instances):
-    sigma = np.random.uniform(2, 8)
+
+def aug_noise(img, labels):
+    sigma = np.random.uniform(2, 6)
     noise = np.random.normal(0, sigma, img.shape).astype(np.float32)
-    return np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8), instances
+    out = np.clip(img.astype(np.float32) + noise, 0, 255).astype(np.uint8)
+    return out, labels
 
-def aug_rotate(img, instances):
-    angle = np.random.uniform(-15, 15)
-    h, w = img.shape[:2]
-    M = cv2.getRotationMatrix2D((w // 2, h // 2), angle, 1.0)
-    rotated = cv2.warpAffine(img, M, (w, h),
-                             flags=cv2.INTER_LINEAR,
-                             borderMode=cv2.BORDER_REFLECT)
-    new_inst = [(cls, rotate_pts(pts, angle)) for cls, pts in instances]
-    return rotated, new_inst
 
-AUG_FUNCS = [aug_flip_h, aug_flip_v, aug_brightness,
-             aug_contrast, aug_noise, aug_rotate]
+AUG_FUNCS = [aug_flip_h, aug_flip_v, aug_brightness, aug_contrast, aug_noise]
 NEG_FUNCS = [aug_flip_h, aug_brightness, aug_noise]
 
 
-# ── Val kopyala ──────────────────────────────────────────────────────────────
+def image_to_label_name(fname):
+    base, _ = os.path.splitext(fname)
+    return base + ".txt"
 
-print("Val seti kopyalaniyor (augmentation yok)...")
-val_src   = "synthetic_dataset_yolo_split/val"
-val_count = 0
-for fname in os.listdir(os.path.join(val_src, "images")):
-    if not (fname.endswith(".png") or fname.endswith(".jpg")):
-        continue
-    shutil.copy2(os.path.join(val_src, "images", fname),
-                 os.path.join(DST_DIR, "val", "images", fname))
-    lbl = fname.replace(".png", ".txt").replace(".jpg", ".txt")
-    src_lbl = os.path.join(val_src, "labels", lbl)
-    dst_lbl = os.path.join(DST_DIR, "val", "labels", lbl)
+
+def list_images(img_dir):
+    if not os.path.exists(img_dir):
+        return []
+    return sorted([
+        f for f in os.listdir(img_dir)
+        if f.lower().endswith((".png", ".jpg", ".jpeg"))
+    ])
+
+
+def copy_pair(fname, src_img_dir, src_lbl_dir, dst_img_dir, dst_lbl_dir):
+    src_img = os.path.join(src_img_dir, fname)
+    lbl_name = image_to_label_name(fname)
+    src_lbl = os.path.join(src_lbl_dir, lbl_name)
+
+    shutil.copy2(src_img, os.path.join(dst_img_dir, fname))
+
+    dst_lbl = os.path.join(dst_lbl_dir, lbl_name)
     if os.path.exists(src_lbl):
         shutil.copy2(src_lbl, dst_lbl)
     else:
-        open(dst_lbl, "w").close()
-    val_count += 1
-print(f"  {val_count} val goruntu kopyalandi")
+        open(dst_lbl, "w", encoding="utf-8").close()
 
 
-# ── Train orijinallerini kopyala ─────────────────────────────────────────────
-
-print("\nTrain orijinalleri kopyalaniyor...")
-orig_count = 0
-for fname in os.listdir(os.path.join(SRC_DIR, "images")):
-    if not (fname.endswith(".png") or fname.endswith(".jpg")):
-        continue
-    shutil.copy2(os.path.join(SRC_DIR, "images", fname),
-                 os.path.join(DST_DIR, "train", "images", fname))
-    lbl = fname.replace(".png", ".txt").replace(".jpg", ".txt")
-    src_lbl = os.path.join(SRC_DIR, "labels", lbl)
-    dst_lbl = os.path.join(DST_DIR, "train", "labels", lbl)
-    if os.path.exists(src_lbl):
-        shutil.copy2(src_lbl, dst_lbl)
-    else:
-        open(dst_lbl, "w").close()
-    orig_count += 1
-print(f"  {orig_count} train goruntu kopyalandi")
+def has_existing_split(src_dir):
+    return os.path.exists(os.path.join(src_dir, "train", "images"))
 
 
-# ── Augmentation ─────────────────────────────────────────────────────────────
+def split_flat_dataset(src_dir):
+    """Flat klasör yapısı: images/ labels/ -> train/val/test listeleri."""
+    src_img_dir = os.path.join(src_dir, "images")
+    src_lbl_dir = os.path.join(src_dir, "labels")
 
-print(f"\nAugmentation uygulanıyor (train, her goruntu icin {N_AUG} versiyon)...")
-aug_count   = 0
-image_files = [f for f in os.listdir(os.path.join(SRC_DIR, "images"))
-               if f.endswith(".png") or f.endswith(".jpg")]
+    image_files = list_images(src_img_dir)
+    random.shuffle(image_files)
 
-for fname in image_files:
+    n_total = len(image_files)
+    n_train = int(n_total * TRAIN_RATIO)
+    n_val = int(n_total * VAL_RATIO)
+
+    train_files = image_files[:n_train]
+    val_files = image_files[n_train:n_train + n_val]
+    test_files = image_files[n_train + n_val:]
+
+    return {
+        "train": (src_img_dir, src_lbl_dir, train_files),
+        "val": (src_img_dir, src_lbl_dir, val_files),
+        "test": (src_img_dir, src_lbl_dir, test_files),
+    }
+
+
+def read_existing_split(src_dir):
+    """Hazır splitli klasör yapısı: train/images, val/images, test/images."""
+    split_data = {}
+    for split in ["train", "val", "test"]:
+        img_dir = os.path.join(src_dir, split, "images")
+        lbl_dir = os.path.join(src_dir, split, "labels")
+        files = list_images(img_dir)
+        split_data[split] = (img_dir, lbl_dir, files)
+    return split_data
+
+
+def augment_train_file(fname, src_img_dir, src_lbl_dir, dst_img_dir, dst_lbl_dir):
     is_negative = fname.startswith("negative_")
 
-    img_path = os.path.join(SRC_DIR, "images", fname)
-    lbl_path = os.path.join(SRC_DIR, "labels",
-                            fname.replace(".png", ".txt").replace(".jpg", ".txt"))
+    img_path = os.path.join(src_img_dir, fname)
+    lbl_path = os.path.join(src_lbl_dir, image_to_label_name(fname))
 
     img = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
-        continue
+        return 0
 
-    instances = read_seg_labels(lbl_path)
+    labels = read_bbox_labels(lbl_path)
 
-    funcs  = NEG_FUNCS if is_negative else AUG_FUNCS
+    funcs = NEG_FUNCS if is_negative else AUG_FUNCS
     chosen = random.sample(funcs, min(N_AUG, len(funcs)))
 
+    base = os.path.splitext(fname)[0]
+    made = 0
+
     for j, aug_fn in enumerate(chosen):
-        aug_img, aug_inst = aug_fn(img.copy(), list(instances))
+        aug_img, aug_labels = aug_fn(img.copy(), [l.copy() for l in labels])
 
-        base     = fname.replace(".png", "").replace(".jpg", "")
-        new_name = f"{base}_aug{j+1}.png"
-        new_lbl  = f"{base}_aug{j+1}.txt"
+        new_img_name = f"{base}_aug{j+1}.png"
+        new_lbl_name = f"{base}_aug{j+1}.txt"
 
-        cv2.imwrite(os.path.join(DST_DIR, "train", "images", new_name), aug_img)
-        write_seg_labels(os.path.join(DST_DIR, "train", "labels", new_lbl), aug_inst)
-        aug_count += 1
+        cv2.imwrite(os.path.join(dst_img_dir, new_img_name), aug_img)
+        write_bbox_labels(os.path.join(dst_lbl_dir, new_lbl_name), aug_labels)
+        made += 1
 
-train_total = orig_count + aug_count
-print(f"  {aug_count} augmented goruntu uretildi")
-print()
-print("SONUC:")
-print(f"  train/: {train_total} goruntu ({orig_count} orijinal + {aug_count} augmented)")
-print(f"  val/  : {val_count} goruntu (temiz, augmentation yok)")
-print(f"  Toplam: {train_total + val_count} goruntu")
-print(f"\nCikti: {DST_DIR}/")
+    return made
+
+
+def main():
+    ensure_src_dir()
+    reset_output_dir(DST_DIR)
+
+    if has_existing_split(SRC_DIR):
+        print(f"Kaynak splitli dataset olarak algılandı: {SRC_DIR}")
+        split_data = read_existing_split(SRC_DIR)
+    else:
+        print(f"Kaynak flat dataset olarak algılandı, burada split yapılacak: {SRC_DIR}")
+        split_data = split_flat_dataset(SRC_DIR)
+
+    print("Split dağılımı:")
+    for split, (_, _, files) in split_data.items():
+        print(f"  {split}: {len(files)}")
+
+    # Orijinalleri kopyala
+    for split, (src_img_dir, src_lbl_dir, files) in split_data.items():
+        for fname in files:
+            copy_pair(
+                fname,
+                src_img_dir,
+                src_lbl_dir,
+                os.path.join(DST_DIR, split, "images"),
+                os.path.join(DST_DIR, split, "labels"),
+            )
+
+    # Sadece train augmentation
+    train_img_dir, train_lbl_dir, train_files = split_data["train"]
+    dst_train_img = os.path.join(DST_DIR, "train", "images")
+    dst_train_lbl = os.path.join(DST_DIR, "train", "labels")
+
+    aug_count = 0
+    for fname in train_files:
+        aug_count += augment_train_file(
+            fname,
+            train_img_dir,
+            train_lbl_dir,
+            dst_train_img,
+            dst_train_lbl,
+        )
+
+    print()
+    print("Augmentation tamamlandı.")
+    print(f"  Kaynak: {SRC_DIR}")
+    print(f"  Çıktı : {DST_DIR}")
+    print(f"  Augmented train görüntü: {aug_count}")
+    print()
+    print("Not: Rotation kullanılmadı; bbox w/h oranı korunur.")
+
+
+if __name__ == "__main__":
+    main()
