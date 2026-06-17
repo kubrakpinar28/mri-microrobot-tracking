@@ -1,6 +1,8 @@
 """
-CNR Filtresi — YOLO Veri Seti Kalite Kontrolü
-Yeni CSV sütun adları (r{n}_true_cx) ve train/val/test split yapısı ile uyumlu.
+CNR-Based Quality Control Filter for YOLO Dataset
+
+Compatible with the updated CSV column format (r{n}_true_cx)
+and train/validation/test dataset split structure.
 """
 
 import os
@@ -30,7 +32,7 @@ SHARPNESS_THRESHOLDS = {
 MAX_ROBOTS   = 25
 MAX_PER_ORGAN = 500
 
-# Eski filtrelenmiş dataset varsa sil
+# Remove existing filtered dataset if present
 if os.path.exists(YOLO_DST):
     shutil.rmtree(YOLO_DST)
 
@@ -64,21 +66,21 @@ print()
 for row in rows:
     filename = row["filename"]
 
-    # Negatif ornekleri atla — asagida ayrica kopyalanacak
+    # Skip negative samples; they will be copied separately later
     if filename.startswith("negative_"):
         continue
 
     split  = row.get("split", "train")
     organ  = row.get("organ", "brain")
 
-    # Organ limiti
+    # Per-organ sample limit
     if organ_kept.get(organ, 0) >= MAX_PER_ORGAN:
         skipped += 1
         skip_reasons["max_reached"] += 1
         continue
 
-    # Robot CNR ve gorunurluk kontrolu
-    # Yeni CSV: r{n}_true_cx, r{n}_visible, r{n}_cnr
+    # Robot visibility and CNR validation
+    # New CSV format: r{n}_true_cx, r{n}_visible, r{n}_cnr
     robot_cnrs    = []
     visible_count = 0
 
@@ -103,7 +105,7 @@ for row in rows:
         skip_reasons["no_visible"] += 1
         continue
 
-    # CNR esigi
+    # CNR threshold check
     cnr_thr = CNR_THRESHOLDS.get(organ, 1.5)
     if organ == "brain":
         passing = sum(1 for c in robot_cnrs if c >= cnr_thr)
@@ -117,7 +119,7 @@ for row in rows:
             skip_reasons["cnr_low"] += 1
             continue
 
-    # Sharpness kontrolu
+    # Sharpness validation
     src_img = os.path.join(YOLO_SRC, split, "images", filename)
     if not os.path.exists(src_img):
         skipped += 1
@@ -133,7 +135,7 @@ for row in rows:
             skip_reasons["sharpness_low"] += 1
             continue
 
-    # Dosyalari kopyala
+    # Copy image and label files
     dst_img = os.path.join(YOLO_DST, split, "images", filename)
     shutil.copy2(src_img, dst_img)
 
@@ -152,7 +154,7 @@ for row in rows:
     kept += 1
     organ_kept[organ] = organ_kept.get(organ, 0) + 1
 
-# Negatif ornekleri split'e gore kopyala
+# Copy negative samples according to dataset split
 print("Negatif ornekler kopyalaniyor...")
 neg_count = 0
 for split in ["train", "val", "test"]:
@@ -194,7 +196,7 @@ if total > 0:
     print(f"Negatif oran: %{neg_count / total * 100:.1f}")
 print()
 
-# Split dagilimi
+# Dataset split distribution
 print("Split dagilimi (filtrelenmis pozitif):")
 for split in ["train", "val", "test"]:
     split_dir = os.path.join(YOLO_DST, split, "images")

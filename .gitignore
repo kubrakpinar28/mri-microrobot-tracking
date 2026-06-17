@@ -1,21 +1,51 @@
-synthetic_dataset_all/
-synthetic_dataset_annotated/
-synthetic_dataset_yolo/
-synthetic_dataset_yolo_filtered/
-synthetic_dataset_yolo_split/
-synthetic_dataset_yolo_augmented/
-synthetic_dataset_heart/
-synthetic/
-synthetic_dataset/
-
-all_mri/
-heart_png/
-knee_png/
-
+# Python
 __pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
 
-*.png
-*.csv
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# Jupyter / Colab
+.ipynb_checkpoints/
+*.ipynb
+
+# Datasets and generated images (usually too large for git)
+synthetic_dataset_yolo_augmented/
+synthetic_dataset/
+*.dcm
+*.nii
+*.nii.gz
+
+# Model weights (large binary files)
 *.pt
-
+*.pth
+*.onnx
+*.engine
 runs/
+
+# Logs and caches
+*.log
+.cache/
+wandb/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Environment variables / secrets
+.env

@@ -1,23 +1,35 @@
 # MRI Microrobot Detection — Requirements
-# Python 3.10+ gereklidir
-# Kurulum: pip install -r requirements.txt
+# Requires Python 3.10+
+# Install with: pip install -r requirements.txt
 
-# Görüntü işleme
-opencv-python>=4.8.0
-numpy>=1.24.0
+# Deep learning — YOLO11 training and tracking (BoT-SORT)
+ultralytics==8.4.70
+
+# PyTorch (ultralytics dependency — may require separate installation for CUDA)
+# These lines are sufficient for CPU:
+torch==2.11.0
+torchvision>=0.15.0
+# For CUDA-enabled GPU: visit https://pytorch.org/get-started/locally/
+# and use the command appropriate for your system (it will override these lines)
+# Note: this project was trained on Colab with CUDA 12.8 (torch 2.11.0+cu128)
+
+# Image processing
+opencv-python>=4.13.0,<4.14.0
+numpy==2.0.2
 matplotlib>=3.7.0
+Pillow>=10.0.0
 
-# NIfTI dosya okuma (kalp dataseti)
+# NIfTI file reading (for the heart dataset)
 nibabel>=5.0.0
 
-# YOLOv8 eğitimi
-ultralytics>=8.0.0
+# Scientific computing — Hungarian matching, spline interpolation
+scipy==1.16.3
 
-# PyTorch (ultralytics bağımlılığı — CUDA için ayrıca kurulum gerekebilir)
-# CPU için:
-torch>=2.0.0
-torchvision>=0.15.0
-# CUDA için: https://pytorch.org/get-started/locally/ adresinden uygun versiyonu seç
+# GIF generation (tracking visualizations)
+imageio>=2.31.0
 
-# Veri işleme
-Pillow>=9.0.0
+# Data handling / tabular
+pandas>=2.0.0
+
+# YAML config files (dataset.yaml, botsort.yaml)
+PyYAML>=6.0

@@ -23,6 +23,12 @@ ROBOT_DIAMETER_MM_MAX = 20.0
 
 
 def keep_largest_component(mask):
+    """
+    Keep only the largest connected component in a binary mask.
+
+    This removes small isolated regions and noise, ensuring that
+    subsequent processing operates on the primary anatomical structure.
+    """
     num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
     if num_labels <= 1:
         return mask
@@ -31,6 +37,13 @@ def keep_largest_component(mask):
 
 
 def extract_magnet_patch(magnet_img_path):
+    """
+    Extract and normalize the magnetic artifact template from a reference image.
+
+    The function identifies the main artifact region, removes background
+    influence, generates an artifact mask, and returns a square normalized
+    patch that can later be inserted into MRI images.
+    """
     img = cv2.imread(magnet_img_path, cv2.IMREAD_GRAYSCALE)
     if img is None:
         raise FileNotFoundError(f"Image not found: {magnet_img_path}")
@@ -89,7 +102,8 @@ def extract_magnet_patch(magnet_img_path):
     effect_mask = cv2.morphologyEx(effect_mask, cv2.MORPH_CLOSE, k2)
     effect_mask = keep_largest_component(effect_mask)
 
-    # ── Patch'i KARE yap — AR = 1.0 garantisi ────────────────────────────────
+    # Convert the extracted artifact patch to a square shape
+    # to preserve a fixed aspect ratio during resizing.
     pH, pW = patch_norm.shape
     side   = min(pH, pW)
     cy_p, cx_p = pH//2, pW//2
@@ -106,6 +120,13 @@ def extract_magnet_patch(magnet_img_path):
 
 
 def get_tissue_mask(image, source_type="default"):
+    """
+    Generate an anatomical tissue mask for a given MRI image.
+
+    Different MRI modalities require different thresholding and
+    morphological operations. The resulting mask defines the valid
+    region where synthetic artifacts may be inserted.
+    """
     blurred = cv2.GaussianBlur(image, (15,15), 0)
     H, W    = image.shape
 
@@ -182,6 +203,12 @@ def get_tissue_mask(image, source_type="default"):
 
 
 def add_rice_noise(image_u8, sigma=12.0):
+    """
+    Apply Rician noise to simulate MRI acquisition noise.
+
+    MRI magnitude images commonly exhibit Rician-distributed noise,
+    making this augmentation more realistic than standard Gaussian noise.
+    """
     img = image_u8.astype(np.float32)
     n1  = np.random.normal(0, sigma, img.shape).astype(np.float32)
     n2  = np.random.normal(0, sigma, img.shape).astype(np.float32)
@@ -193,6 +220,19 @@ def place_magnet(image_f32, tissue_mask,
                  cx, cy, scale=1.0, h=0.0, hthr=9.0,
                  motion_vec=None, alpha=0.92, contrast=1.0,
                  source_type="default"):
+    """
+    Insert a synthetic magnetic microrobot artifact into an MRI image.
+
+    The artifact is resized according to the desired robot scale,
+    blended into the surrounding tissue, and evaluated using a
+    contrast-to-noise ratio (CNR) visibility metric.
+
+    Returns:
+        result      : MRI image with inserted artifact
+        visible     : visibility flag based on organ-specific CNR threshold
+        cnr         : computed contrast-to-noise ratio
+        artifact_mask : final artifact region used for evaluation
+    """
     result     = image_f32.copy()
     if h >= hthr:
         return result, False, 0.0, None
@@ -205,9 +245,9 @@ def place_magnet(image_f32, tissue_mask,
     em = cv2.resize(effect_mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
     em = (em > 127).astype(bool)
 
-    # ── Motion stretch KAPALI — AR = 1.0 korunuyor ───────────────────────────
-    # motion_vec parametresi API uyumluluğu için bırakıldı ama uygulanmıyor.
-
+    # Motion-based stretching is intentionally disabled to preserve
+    # the physical aspect ratio of the artifact template.
+    # motion_vec is retained only for backward compatibility.
     H, W  = result.shape
     x1i   = cx - new_w//2;  x2i = x1i + new_w
     y1i   = cy - new_h//2;  y2i = y1i + new_h
@@ -229,8 +269,8 @@ def place_magnet(image_f32, tissue_mask,
     yy, xx      = np.mgrid[0:ph_r, 0:pw_r].astype(np.float32)
     x_rel, y_rel = xx - cx_p, yy - cy_p
     h_px         = h / 0.94 if h > 0 else 0.5
-    r_3d         = np.sqrt(x_rel**2 + y_rel**2 + h_px**2) + 1e-6   # DÜZELTİLDİ
-    dipole_mag   = np.abs(3*(x_rel/r_3d)**2 - 1) / (r_3d**2 + 1e-6) # DÜZELTİLDİ
+    r_3d         = np.sqrt(x_rel**2 + y_rel**2 + h_px**2) + 1e-6   # 3D distance from the artifact center.
+    dipole_mag   = np.abs(3*(x_rel/r_3d)**2 - 1) / (r_3d**2 + 1e-6) # Dipole-inspired magnetic field intensity approximation.
     dipole_norm  = np.clip(dipole_mag / (np.percentile(dipole_mag, 97)+1e-9), 0.0, 1.0)
     r_falloff    = np.exp(-r_3d / (max(ph_r, pw_r)*0.4))
     pen_str      = eff_alpha * 0.65 * dipole_norm * (0.6 + 0.4*r_falloff)
@@ -258,7 +298,7 @@ def place_magnet(image_f32, tissue_mask,
     blended = np.where(tissue_roi, blended, roi)
     result[iy1:iy2, ix1:ix2] = np.clip(blended, 0.0, 1.0)
 
-    # CNR hesaplama
+    # Compute artifact visibility using the contrast-to-noise ratio (CNR).
     artifact_mask = em_c & tissue_roi
     if not artifact_mask.any():
         artifact_mask = tissue_roi
@@ -281,6 +321,13 @@ def place_magnet(image_f32, tissue_mask,
 
 
 def detect_source_type(filename):
+    """
+    Infer the MRI modality from the source filename.
+
+    The detected modality determines tissue segmentation parameters,
+    pixel spacing values, and visibility thresholds used during
+    synthetic artifact generation.
+    """
     name = filename.lower()
     if any(k in name for k in ("sagittal", "brain", "mr-art")):  return "brain"
     if any(k in name for k in ("heart", "la_", "sa_")):           return "heart"
@@ -294,6 +341,14 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
                             motion_vecs=None, alphas=None, contrasts=None,
                             hthr=9.0, contrast_alpha=1.0, contrast_beta=0,
                             min_dist=40, seed=None, source_type="default"):
+    """
+    Generate a synthetic MRI image containing one or more magnetic
+    microrobot artifacts.
+
+    The function selects valid tissue locations, inserts synthetic
+    artifacts, evaluates their visibility using CNR, and generates
+    bounding-box annotations for object detection training.
+    """
     if seed is not None:
         np.random.seed(seed)
     img = np.clip(contrast_alpha * mri_image.astype(np.float32) + contrast_beta,
@@ -303,7 +358,8 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
     if len(all_tissue_pixels) == 0:
         raise ValueError("Tissue mask is empty!")
 
-    # ── Fiziksel robot boyutu: 1-2 cm çap → pixel spacing ile ölçekle ───────
+    # Convert the desired physical robot diameter (10–20 mm)
+    # into image-space dimensions using modality-specific pixel spacing.
     if scales is None:
         pixel_spacing = PIXEL_SPACING_MM.get(source_type, 0.80)
         patch_side    = patch_norm.shape[0]   # patch kare olduğundan tek boyut yeterli
@@ -316,7 +372,8 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
     if alphas     is None: alphas     = [round(np.random.uniform(0.93, 1.0),  3)     for _ in range(num_robots)]
     if contrasts  is None: contrasts  = [round(np.random.uniform(1.0,  1.2),  3)     for _ in range(num_robots)]
 
-    # Motion stretch KAPALI — AR = 1.0 sabit
+    # Motion-based deformation is disabled to maintain
+    # a fixed square artifact geometry.
     motion_vecs = [None] * num_robots
 
     img_f  = img.astype(np.float32) / 255.0
@@ -342,18 +399,18 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
             source_type=source_type)
 
         if not visible:
-            print(f"  Robot {i+1}: pos=({px},{py}) gorunmez (CNR={cnr:.2f}), atlaniyor.")
+            print(f"  Robot {i+1}: pos=({px},{py}) not visible (CNR={cnr:.2f}), skipped.")
             continue
 
         img_f = img_f_test
         placed.append((px, py))
 
-        # ── BBox: teorik fiziksel kare boyut, merkez = gerçek yerleştirme ────
-        # Görünen artefakt maskesinden DEĞİL, fiziksel çaptan hesaplanır.
-        # Böylece:
-        #   1) Merkez her zaman gerçek robot konumuna eşittir (px, py)
-        #   2) BBox her zaman kare (AR = 1.0)
-        #   3) Robot doku kenarındaysa merkez kaymaz
+        # Generate the bounding box from the theoretical physical robot size
+        # rather than the visible artifact mask.
+        # This ensures:
+        #   1) The box center always matches the true robot position.
+        #   2) The bounding box remains square (AR = 1.0).
+        #   3) Edge effects do not shift the annotation center.
         pixel_spacing    = PIXEL_SPACING_MM.get(source_type, 0.80)
         theoretical_side = int(patch_norm.shape[0] * scales[i])
         theoretical_side = max(8, theoretical_side)
@@ -368,7 +425,7 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
         print(f"  Robot {i+1}: pos=({px},{py})  scale={scales[i]:.3f}  "
               f"bbox={bbox_w_px}x{bbox_h_px}px ({robot_mm}mm)  AR={aspect_ratio}  "
               f"h={h_values[i]}mm  CNR={cnr:.2f}")
-
+        # Store robot metadata for CSV export and YOLO annotation generation.
         labels.append({
             "robot_id":     i + 1,
             "x":            int(px),
@@ -396,6 +453,13 @@ def generate_synthetic_mri(mri_image, patch_norm, effect_mask, patch_center,
 def generate_negative_samples(all_mri_files, n_samples, output_folder,
                                annotated_folder, yolo_folder, rice_sigma=3.0,
                                train_ratio=0.72, val_ratio=0.18):
+    """
+    Generate negative MRI samples without microrobot artifacts.
+
+    These images are used as background-only examples for object
+    detection training and receive empty YOLO annotation files.
+    Mild Rician noise is added to preserve MRI realism.
+    """
     import random
     chosen    = random.choices(all_mri_files, k=n_samples)
     neg_count = 0
@@ -411,8 +475,8 @@ def generate_negative_samples(all_mri_files, n_samples, output_folder,
         cv2.imwrite(os.path.join(output_folder,    fn), noisy)
         cv2.imwrite(os.path.join(annotated_folder, fn), noisy)
 
-        # Split'e göre kaydet — train/val/test klasör yapısı
-        rnd   = np.random.random()
+        # Assign each negative sample to the train, validation,
+        # or test subset using the predefined split ratios.
         split = "train" if rnd < train_ratio else ("val" if rnd < train_ratio+val_ratio else "test")
         yolo_img = os.path.join(yolo_folder, split, "images", fn)
         yolo_lbl = os.path.join(yolo_folder, split, "labels", fn.replace(".png", ".txt"))
@@ -424,6 +488,13 @@ def generate_negative_samples(all_mri_files, n_samples, output_folder,
 
 def visualize(original, tissue_mask, synthetic, labels,
               patch_norm=None, save_path=None, title_prefix=""):
+    """
+    Visualize the original MRI, tissue mask, synthetic result,
+    and generated annotations for qualitative inspection.
+
+    Bounding boxes, robot centers, and physical robot sizes
+    are overlaid to simplify validation of generated samples.
+    """
     ncols  = 4 if patch_norm is not None else 3
     fig, axes = plt.subplots(1, ncols, figsize=(5*ncols, 6))
     fig.patch.set_facecolor('#1a1a1a')
@@ -434,7 +505,7 @@ def visualize(original, tissue_mask, synthetic, labels,
     if patch_norm is not None:
         pshow = (patch_norm*255).astype(np.uint8) if patch_norm.max()<=1.0 else patch_norm
         imgs.append(pshow)
-        titles.append("Magnet Patch (kare, 1:1)")
+        titles.append("Magnet Patch (square, AR=1.0)")
 
     for ax, im, t in zip(axes, imgs, titles):
         ax.imshow(im, cmap='gray', vmin=0, vmax=255)
@@ -448,10 +519,10 @@ def visualize(original, tissue_mask, synthetic, labels,
         bx, by = lbl['bbox_cx_px'], lbl['bbox_cy_px']
         bw, bh = lbl['bbox_w_px'],  lbl['bbox_h_px']
 
-        # Merkez nokta
+        # Draw the ground-truth robot center.
         ax_syn.plot(bx, by, 'o', color='cyan', markersize=4,
                     markeredgecolor='white', markeredgewidth=0.8, zorder=6)
-        # Kare bbox
+        # Draw the theoretical square bounding box.
         rect = mpatches.Rectangle(
             (bx - bw/2, by - bh/2), bw, bh,
             fill=False, edgecolor=col, linewidth=1.5)
@@ -532,7 +603,8 @@ if __name__ == "__main__":
     total = len(balanced_files)
     print(f"Total {total} images to generate\n")
 
-    # CSV — bbox merkezi ve boyutu kaydediliyor
+    # Create a metadata CSV containing robot positions,
+    # bounding-box dimensions, visibility status, and CNR values.
     csv_path   = os.path.join(OUTPUT_FOLDER, "labels.csv")
     csv_file   = open(csv_path, "w", newline="")
     csv_writer = csv.writer(csv_file)
@@ -591,7 +663,8 @@ if __name__ == "__main__":
 
         cv2.imwrite(os.path.join(OUTPUT_FOLDER, filename), synthetic)
 
-        # Annotated: cyan merkez + bbox
+        # Generate a visualization image containing bounding boxes
+        # and robot center markers for manual inspection.
         annotated = cv2.cvtColor(synthetic, cv2.COLOR_GRAY2BGR)
         for lbl in labels:
             bx, by = int(round(lbl["bbox_cx_px"])), int(round(lbl["bbox_cy_px"]))
@@ -603,7 +676,9 @@ if __name__ == "__main__":
             cv2.circle(annotated, (bx,by), DOT_RADIUS+1, (255,255,255), 1)
         cv2.imwrite(os.path.join(ANNOTATED_FOLDER, filename), annotated)
 
-        # YOLO detection label: 0 cx cy w h (normalize)
+        # Export YOLO-format object detection annotations:
+        # class_id x_center y_center width height
+        # All coordinates are normalized to image dimensions.
         yolo_img = os.path.join(YOLO_FOLDER, split, "images", filename)
         yolo_lbl = os.path.join(YOLO_FOLDER, split, "labels",
                                 filename.replace(".png",".txt"))
@@ -614,7 +689,8 @@ if __name__ == "__main__":
         lines = []
         for lbl in labels:
             if not lbl["visible"]: continue
-            # Gerçek merkez korunuyor — kenara yakın robotlarda merkez kaydırılmıyor
+            # Preserve the true robot center location regardless
+            # of clipping effects near image boundaries.
             xc  = float(np.clip(lbl["bbox_cx_px"] / img_w, 0.001, 0.999))
             yc  = float(np.clip(lbl["bbox_cy_px"] / img_h, 0.001, 0.999))
             bwn = float(np.clip(lbl["bbox_w_px"]  / img_w, 0.001, 0.500))
@@ -624,6 +700,8 @@ if __name__ == "__main__":
             f.write("\n".join(lines))
 
         # CSV
+        # Store complete robot metadata for later analysis,
+        # filtering, and dataset quality assessment.
         row     = [filename, split, src_name, organ, img_w, img_h, len(labels)]
         lbl_map = {l["robot_id"]: l for l in labels}
         for r_id in range(1, MAX_ROBOTS+1):

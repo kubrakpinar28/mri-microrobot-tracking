@@ -1,16 +1,16 @@
 """
-Veri Artirma (Data Augmentation) — YOLO Detection BBox
-======================================================
+Data Augmentation for YOLO Detection Bounding Boxes
+==================================================
 
-Label formati:
+Label format:
     class_id x_center y_center width height
 
-Bu sürüm segmentation/polygon label kullanmaz.
-Rotation uygulanmaz; böylece bbox aspect ratio bozulmaz.
-Sadece train setine augmentation uygulanır.
-Val/test setleri temiz kalır.
+This version does not use segmentation or polygon labels.
+Rotation is intentionally disabled to preserve bounding box aspect ratios.
+Augmentation is applied only to the training set.
+Validation and test sets remain unchanged.
 
-Çalıştırma:
+Usage:
     python augment_dataset.py
 """
 
@@ -20,8 +20,9 @@ import numpy as np
 import shutil
 import random
 
-# Öncelik sırası: önce filtrelenmiş dataset, yoksa doğrudan YOLO dataset.
-# Eğer elinde hazır splitli klasör varsa SRC_DIR'i elle ona da çevirebilirsin.
+# Priority order: use the filtered dataset first, otherwise fall back
+# to the original YOLO dataset. SRC_DIR can also be manually set to
+# an already split dataset structure.
 SRC_DIR = "synthetic_dataset_yolo_filtered"
 DST_DIR = "synthetic_dataset_yolo_augmented"
 
@@ -37,7 +38,7 @@ np.random.seed(SEED)
 
 
 def ensure_src_dir():
-    """Varsayılan filtrelenmiş klasör yoksa alternatifleri dene."""
+    """Try alternative dataset locations if the default filtered dataset is unavailable."""
     global SRC_DIR
     candidates = [SRC_DIR, "synthetic_dataset_yolo", "synthetic_dataset_yolo_split"]
     for c in candidates:
@@ -64,10 +65,11 @@ def reset_output_dir(path):
 
 def read_bbox_labels(label_path):
     """
-    YOLO detection label oku.
-    Her satır kesinlikle 5 eleman olmalı:
-        class_id x_center y_center width height
-    """
+Read YOLO detection labels.
+
+Each label line must contain exactly:
+    class_id x_center y_center width height
+"""
     labels = []
 
     if not os.path.exists(label_path):
@@ -87,7 +89,7 @@ def read_bbox_labels(label_path):
             cls = int(float(parts[0]))
             x, y, w, h = map(float, parts[1:])
 
-            # Güvenlik: değerleri normalize aralıkta tut.
+            # Keep values within the normalized YOLO range.
             x = float(np.clip(x, 0.0, 1.0))
             y = float(np.clip(y, 0.0, 1.0))
             w = float(np.clip(w, 0.0, 1.0))
@@ -105,7 +107,7 @@ def write_bbox_labels(label_path, labels):
 
 
 def aug_flip_h(img, labels):
-    """Yatay flip: x_center -> 1 - x_center. w/h değişmez."""
+    """Horizontal flip: x_center -> 1 - x_center. Width and height remain unchanged."""
     new_labels = []
     for cls, x, y, w, h in labels:
         new_labels.append([cls, 1.0 - x, y, w, h])
@@ -113,7 +115,7 @@ def aug_flip_h(img, labels):
 
 
 def aug_flip_v(img, labels):
-    """Dikey flip: y_center -> 1 - y_center. w/h değişmez."""
+    """Vertical flip: y_center -> 1 - y_center. Width and height remain unchanged."""
     new_labels = []
     for cls, x, y, w, h in labels:
         new_labels.append([cls, x, 1.0 - y, w, h])
@@ -177,7 +179,7 @@ def has_existing_split(src_dir):
 
 
 def split_flat_dataset(src_dir):
-    """Flat klasör yapısı: images/ labels/ -> train/val/test listeleri."""
+    """Split a flat dataset structure into train, validation, and test file lists."""
     src_img_dir = os.path.join(src_dir, "images")
     src_lbl_dir = os.path.join(src_dir, "labels")
 
@@ -200,7 +202,7 @@ def split_flat_dataset(src_dir):
 
 
 def read_existing_split(src_dir):
-    """Hazır splitli klasör yapısı: train/images, val/images, test/images."""
+    """Read an existing dataset split structure (train/val/test)."""
     split_data = {}
     for split in ["train", "val", "test"]:
         img_dir = os.path.join(src_dir, split, "images")
@@ -256,7 +258,7 @@ def main():
     for split, (_, _, files) in split_data.items():
         print(f"  {split}: {len(files)}")
 
-    # Orijinalleri kopyala
+    # Copy original images and labels
     for split, (src_img_dir, src_lbl_dir, files) in split_data.items():
         for fname in files:
             copy_pair(
@@ -267,7 +269,7 @@ def main():
                 os.path.join(DST_DIR, split, "labels"),
             )
 
-    # Sadece train augmentation
+    # Apply augmentation only to the training set
     train_img_dir, train_lbl_dir, train_files = split_data["train"]
     dst_train_img = os.path.join(DST_DIR, "train", "images")
     dst_train_lbl = os.path.join(DST_DIR, "train", "labels")

@@ -10,10 +10,10 @@ import random
 OUTPUT_DIR = r"C:\Users\kmfm2\Downloads\all_mri"
 
 if os.path.basename(OUTPUT_DIR.rstrip("/\\")) != "all_mri":
-    raise ValueError(f"Guvenlik hatasi: Yanlis klasor silinmek uzere! -> {OUTPUT_DIR}")
+    raise ValueError(f"Safety check failed: Unexpected directory is about to be deleted -> {OUTPUT_DIR}")
 
 if os.path.exists(OUTPUT_DIR):
-    print("Eski dataset siliniyor...")
+    print("Removing existing dataset...")
     shutil.rmtree(OUTPUT_DIR)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -29,7 +29,7 @@ for src in sources:
     files = glob.glob(os.path.join(src, "*.png")) + \
             glob.glob(os.path.join(src, "*.jpg"))
 
-    # Knee icin her calistirmada farkli 5000 goruntu
+    # Randomly sample up to 5000 knee MRI images for each run
     if "knee_png" in src:
         files = random.sample(files, min(5000, len(files)))
 
@@ -39,6 +39,6 @@ for src in sources:
         new_name = f"{folder_name}_{count:05d}{ext}"
         shutil.copy(f, os.path.join(OUTPUT_DIR, new_name))
         count += 1
-    print(f"{folder_name}: {len(files)} dosya kopyalandi")
+    print(f"{folder_name}: {len(files)} files copied")
 
 print(f"\nToplam {count} dosya -> {OUTPUT_DIR}")
